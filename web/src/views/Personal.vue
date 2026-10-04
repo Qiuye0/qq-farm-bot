@@ -49,7 +49,7 @@ watch(currentTab, (tab) => {
 
     <div class="flex-1 overflow-hidden overflow-y-auto">
       <div v-for="tab in visitedTabs" v-show="tab === currentTab" :key="tab">
-        <component :is="tabPanels[tab]" />
+        <component :is="tabPanels[tab]" v-bind="tab === 'farm' ? { active: currentTab === 'farm' } : {}" />
       </div>
     </div>
   </div>

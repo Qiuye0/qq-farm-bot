@@ -3,25 +3,40 @@ import type { FertilizerType } from '@/stores/farm'
 import type { FriendInteractionItemDto, FriendInteractionResultDto } from '@/stores/friend'
 import { useIntervalFn } from '@vueuse/core'
 import { NButton } from 'naive-ui/es/button'
+import { NInputNumber } from 'naive-ui/es/input-number'
+import { NSwitch } from 'naive-ui/es/switch'
 import { storeToRefs } from 'pinia'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { getApiErrorMessage } from '@/api'
 import CareerHarvestSteal from '@/components/CareerHarvestSteal.vue'
+import AccountSummary from '@/components/AccountSummary.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import LandCard from '@/components/LandCard.vue'
 import { useAccountStore } from '@/stores/account'
+import { useBagStore } from '@/stores/bag'
 import { useFarmStore } from '@/stores/farm'
 import { useSettingStore } from '@/stores/setting'
 import { useStatusStore } from '@/stores/status'
 import { useToastStore } from '@/stores/toast'
 import { interactionItemTargetReason } from '@/utils/interaction-item-rules'
+import { ripenLand } from '@/utils/ripen-land'
+
+const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true })
+const landView = ref<'default' | 'compact'>('default')
+const autoRefreshEnabled = ref(false)
+const autoRefreshSeconds = ref(3)
+const autoRefreshPreferencesLoaded = ref(false)
+const ripeningLandId = ref<number | null>(null)
+let ripenSequence = 0
+let autoRefreshTimer: ReturnType<typeof setInterval> | null = null
 
 const farmStore = useFarmStore()
 const accountStore = useAccountStore()
 const settingStore = useSettingStore()
 const statusStore = useStatusStore()
 const toast = useToastStore()
+const bagStore = useBagStore()
 const route = useRoute()
 const {
   lands,
@@ -269,7 +284,7 @@ function formatFertilizerRemaining(sec: number) {
 }
 
 async function handleFertilize(land: any, fertilizerType: FertilizerType) {
-  if (!currentAccountId.value || fertilizePending.value || !isFertilizeCandidate(land))
+  if (!currentAccountId.value || fertilizePending.value || ripeningLandId.value !== null || !isFertilizeCandidate(land))
     return
   if (fertilizerType === 'normal' && !canNormalFertilize(land)) {
     toast.info('本季已施过普通化肥')
@@ -291,6 +306,62 @@ async function handleFertilize(land: any, fertilizerType: FertilizerType) {
   finally {
     if (fertilizingLandId.value === landId)
       fertilizingLandId.value = null
+    if (currentAccountId.value)
+      void bagStore.fetchBag(currentAccountId.value)
+  }
+}
+
+async function handleRipen(land: any) {
+  const accountId = currentAccountId.value
+  if (!accountId || fertilizePending.value || ripeningLandId.value !== null || operating.value || farmingLandId.value !== null || !isFertilizeCandidate(land))
+    return
+  const landId = Number(land.id)
+  const sequence = ++ripenSequence
+  ripeningLandId.value = landId
+  fertilizingLandId.value = landId
+  const cancelled = () => sequence !== ripenSequence || currentAccountId.value !== accountId || !props.active || !currentAccountRunning.value
+  try {
+    const result = await ripenLand({
+      getLand: () => lands.value.find(item => Number(item.id) === landId),
+      cancelled,
+      fertilize: type => farmStore.fertilizeLand(accountId, landId, type),
+    })
+    if (result.cancelled)
+      return
+    const count = `普通 ${result.normalCount} 次，有机 ${result.organicCount} 次`
+    if (result.stopped === 'unavailable')
+      toast.warning(`已停止催熟（${count}）：${fertilizeError.value || '当前无法继续施肥'}`)
+    else if (result.stopped === 'no-progress')
+      toast.warning(`已停止催熟（${count}）：作物状态未继续推进，请刷新后重试`)
+    else if (result.stopped === 'empty')
+      toast.info(`已停止催熟（${count}）：有机化肥已用尽`)
+    else
+      toast.success(`第 ${landId} 块土地催熟完成（${count}）`)
+
+    if (cancelled())
+      return
+    operating.value = true
+    try {
+      await farmStore.operate(accountId, 'harvest')
+      if (cancelled())
+        return
+      await farmStore.operate(accountId, 'clear')
+      toast.success(`第 ${landId} 块土地已完成催熟、收获和一键务农`)
+    }
+    catch (cause: any) {
+      toast.error(getApiErrorMessage(cause, '催熟后的收获或一键务农失败'))
+    }
+    finally {
+      operating.value = false
+    }
+  }
+  finally {
+    if (sequence === ripenSequence) {
+      ripeningLandId.value = null
+      fertilizingLandId.value = null
+    }
+    if (currentAccountId.value === accountId)
+      void bagStore.fetchBag(accountId)
   }
 }
 
@@ -390,7 +461,73 @@ async function refreshFarm() {
   }
 }
 
+function autoRefreshStorageKey(accountId: string) {
+  return `qq-farm-bot:farm-auto-refresh:${accountId}`
+}
+
+function loadAutoRefreshPreferences(accountId: string | null | undefined) {
+  autoRefreshPreferencesLoaded.value = false
+  autoRefreshEnabled.value = false
+  autoRefreshSeconds.value = 3
+  if (accountId && typeof window !== 'undefined') {
+    try {
+      const raw = window.localStorage.getItem(autoRefreshStorageKey(accountId))
+      if (raw) {
+        const saved = JSON.parse(raw)
+        autoRefreshEnabled.value = saved?.enabled === true
+        const seconds = Number(saved?.seconds)
+        if (Number.isFinite(seconds))
+          autoRefreshSeconds.value = Math.min(3600, Math.max(1, Math.round(seconds)))
+      }
+    }
+    catch {
+      // Ignore malformed local preferences and keep the defaults.
+    }
+  }
+  autoRefreshPreferencesLoaded.value = true
+}
+
+function saveAutoRefreshPreferences() {
+  const accountId = currentAccountId.value
+  if (!autoRefreshPreferencesLoaded.value || !accountId || typeof window === 'undefined')
+    return
+  window.localStorage.setItem(autoRefreshStorageKey(accountId), JSON.stringify({
+    enabled: autoRefreshEnabled.value,
+    seconds: autoRefreshSeconds.value,
+  }))
+}
+
+function stopAutoRefresh() {
+  if (autoRefreshTimer !== null) {
+    clearInterval(autoRefreshTimer)
+    autoRefreshTimer = null
+  }
+}
+
+function restartAutoRefresh() {
+  stopAutoRefresh()
+  if (!autoRefreshEnabled.value || !props.active || !currentAccountRunning.value)
+    return
+  autoRefreshTimer = setInterval(() => {
+    if (manualRefreshing.value || ripeningLandId.value !== null || operating.value || farmingLandId.value !== null)
+      return
+    void refreshFarm()
+  }, autoRefreshSeconds.value * 1000)
+}
+
+watch(currentAccountId, accountId => {
+  loadAutoRefreshPreferences(accountId)
+  stopAutoRefresh()
+}, { immediate: true })
+
+watch([autoRefreshEnabled, autoRefreshSeconds], () => {
+  saveAutoRefreshPreferences()
+  restartAutoRefresh()
+})
+
 watch(currentAccountId, () => {
+  ripenSequence++
+  ripeningLandId.value = null
   farmStore.resetLandState()
   fertilizingLandId.value = null
   farmingLandId.value = null
@@ -398,6 +535,14 @@ watch(currentAccountId, () => {
   selectedInteractionLandIds.value = {}
   lastInteractionResults.value = {}
 })
+
+watch(() => props.active, (active) => {
+  if (!active)
+    ripenSequence++
+  restartAutoRefresh()
+})
+
+watch(currentAccountRunning, restartAutoRefresh)
 
 watch(interactionItems, (items) => {
   const first = items[0]
@@ -434,16 +579,20 @@ const { pause: pauseRefresh, resume: resumeRefresh } = useIntervalFn(refreshFarm
 onMounted(() => {
   resume()
   resumeRefresh()
+  restartAutoRefresh()
 })
 
 onUnmounted(() => {
+  ripenSequence++
   pause()
   pauseRefresh()
+  stopAutoRefresh()
 })
 </script>
 
 <template>
   <div class="space-y-5">
+    <AccountSummary />
     <div class="cartoon-card farm-card rounded-2xl bg-white shadow-lg dark:bg-gray-800">
       <!-- Header with Title and Actions -->
       <div class="flex flex-col items-center justify-between gap-4 border-b border-gray-100 p-5 sm:flex-row dark:border-gray-700">
@@ -456,18 +605,42 @@ onUnmounted(() => {
             quaternary
             title="刷新土地"
             :loading="manualRefreshing"
-            :disabled="!currentAccountId || !currentAccountRunning"
+            :disabled="!currentAccountId || !currentAccountRunning || ripeningLandId !== null"
             @click="refreshFarm"
           >
             <span :class="refreshIconClass" />
           </NButton>
+          <div class="flex items-center gap-2 text-xs text-gray-500">
+            <NSwitch v-model:value="autoRefreshEnabled" size="small" aria-label="定时刷新土地详情" />
+            <span>定时刷新</span>
+            <NInputNumber
+              v-model:value="autoRefreshSeconds"
+              :min="1"
+              :max="3600"
+              :step="1"
+              size="small"
+              :disabled="!autoRefreshEnabled"
+              :show-button="false"
+              aria-label="土地详情刷新间隔（秒）"
+              style="width: 78px"
+            />
+            <span>秒</span>
+          </div>
+          <div class="land-view-switch" role="group" aria-label="土地布局">
+            <button type="button" title="默认视图" aria-label="默认视图" :aria-pressed="landView === 'default'" @click="landView = 'default'">
+              <span class="i-carbon-grid" />
+            </button>
+            <button type="button" title="缩放视图" aria-label="缩放视图" :aria-pressed="landView === 'compact'" @click="landView = 'compact'">
+              <span class="i-carbon-zoom-out" />
+            </button>
+          </div>
         </div>
         <div class="grid grid-cols-2 gap-3 sm:flex sm:flex-wrap">
           <NButton
             v-for="op in operations"
             :key="op.type"
             :type="op.buttonType"
-            :disabled="operating || farmingLandId !== null || !currentAccountRunning"
+            :disabled="operating || farmingLandId !== null || ripeningLandId !== null || !currentAccountRunning"
             @click="handleOperate(op.type)"
           >
             <span :class="op.icon" />
@@ -639,26 +812,31 @@ onUnmounted(() => {
             </template>
           </div>
 
-          <div class="grid grid-cols-2 gap-4 lg:grid-cols-6 md:grid-cols-4 sm:grid-cols-3">
+          <div class="land-grid" :class="landView === 'compact' ? 'land-grid--compact' : 'grid grid-cols-2 gap-4 lg:grid-cols-6 md:grid-cols-4 sm:grid-cols-3'">
             <LandCard
               v-for="land in lands"
               :key="land.id"
               :land="land"
+              :compact="landView === 'compact'"
+              :show-ripen-action="true"
+              :ripen-pending="ripeningLandId === land.id"
+              :ripen-disabled="ripeningLandId !== null || fertilizePending || operating || farmingLandId !== null"
               :selectable="!!selectedInteractionItem"
               :selected="isInteractionLandSelected(land)"
               :selection-disabled="isInteractionLandDisabled(land)"
               :selection-label="interactionLandSelectionLabel(land)"
               :show-fertilizer-actions="showManualFertilizerButtons && isFertilizeCandidate(land)"
               :fertilizer-pending="fertilizePending && fertilizingLandId === land.id"
-              :normal-fertilizer-disabled="fertilizePending || !canNormalFertilize(land)"
+              :normal-fertilizer-disabled="fertilizePending || ripeningLandId !== null || !canNormalFertilize(land)"
               :normal-fertilizer-label="normalFertilizerLabel(land)"
-              :organic-fertilizer-disabled="fertilizePending"
+              :organic-fertilizer-disabled="fertilizePending || ripeningLandId !== null"
               :show-farming-action="isLandFarmingCandidate(land)"
               :farming-pending="farmingLandId === land.id"
-              :farming-disabled="farmingLandId !== null || operating"
+              :farming-disabled="farmingLandId !== null || operating || ripeningLandId !== null"
               @select="toggleInteractionLand(land)"
               @fertilize="handleFertilize"
               @farm="handleFarmLand"
+              @ripen="handleRipen"
             />
           </div>
         </div>
@@ -683,3 +861,37 @@ onUnmounted(() => {
     />
   </div>
 </template>
+
+<style scoped>
+.land-view-switch {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  padding: 2px;
+}
+.land-view-switch button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+  color: var(--ui-muted);
+}
+.land-view-switch button[aria-pressed="true"] {
+  color: var(--ui-primary);
+  background: var(--ui-primary-soft);
+}
+.land-grid--compact {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  max-width: 640px;
+}
+@media (max-width: 480px) {
+  .land-grid--compact {
+    gap: 4px;
+  }
+}
+</style>

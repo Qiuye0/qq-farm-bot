@@ -16,6 +16,10 @@ const props = withDefaults(defineProps<{
   showFarmingAction?: boolean
   farmingPending?: boolean
   farmingDisabled?: boolean
+  compact?: boolean
+  showRipenAction?: boolean
+  ripenPending?: boolean
+  ripenDisabled?: boolean
 }>(), {
   selectable: false,
   selected: false,
@@ -30,12 +34,17 @@ const props = withDefaults(defineProps<{
   showFarmingAction: false,
   farmingPending: false,
   farmingDisabled: false,
+  compact: false,
+  showRipenAction: false,
+  ripenPending: false,
+  ripenDisabled: false,
 })
 
 const emit = defineEmits<{
   select: [land: any]
   fertilize: [land: any, fertilizerType: 'normal' | 'organic']
   farm: [land: any]
+  ripen: [land: any]
 }>()
 
 const land = computed(() => props.land)
@@ -292,6 +301,7 @@ function markMutantIconFailed(effect: { id?: number }) {
         'land-card--selectable': selectable,
         'land-card--selected': selected,
         'land-card--selection-disabled': selectable && selectionDisabled,
+        'land-card--compact': compact,
       },
     ]"
     :role="selectable ? 'button' : undefined"
@@ -474,7 +484,7 @@ function markMutantIconFailed(effect: { id?: number }) {
       </button>
     </div>
 
-    <div v-if="showFertilizerActions" class="fertilizer-actions mt-2 w-full" @click.stop>
+    <div v-if="showFertilizerActions" class="fertilizer-actions mt-2 w-full" :class="{ 'fertilizer-actions--ripen': showRipenAction }" @click.stop>
       <button
         type="button"
         class="fertilizer-action fertilizer-action--normal"
@@ -496,6 +506,18 @@ function markMutantIconFailed(effect: { id?: number }) {
         <span v-if="fertilizerPending" class="i-svg-spinners-90-ring-with-bg" />
         <span v-else class="i-carbon-sprout" />
         有机
+      </button>
+      <button
+        v-if="showRipenAction"
+        type="button"
+        class="fertilizer-action fertilizer-action--ripen"
+        :disabled="ripenDisabled || ripenPending"
+        title="仅催熟该地块：普通肥一次，再连续施有机肥至成熟或无法继续"
+        @click="emit('ripen', land)"
+      >
+        <span v-if="ripenPending" class="i-svg-spinners-90-ring-with-bg" />
+        <span v-else class="i-carbon-flash" />
+        催全熟
       </button>
     </div>
   </div>
@@ -955,6 +977,45 @@ function markMutantIconFailed(effect: { id?: number }) {
   color: var(--ui-ink);
   box-shadow: var(--ui-shadow-sm);
 }
+.land-card--compact {
+  min-height: 88px !important;
+  padding: 6px !important;
+  border-radius: 6px !important;
+  font-size: 8px;
+}
+.land-card--compact .plant-container {
+  width: 24px;
+  height: 24px;
+  margin-top: 12px;
+}
+.land-card--compact .plant-container img {
+  max-width: 24px;
+  max-height: 24px;
+}
+.land-card--compact .farm-progress {
+  height: 3px;
+}
+.land-card--compact .fertilizer-actions {
+  gap: 2px;
+  margin-top: 3px;
+}
+.land-card--compact .fertilizer-action,
+.land-card--compact .farming-action {
+  min-height: 16px;
+  padding: 0 2px;
+  border-radius: 4px;
+  font-size: 7px;
+}
+.land-card--compact .fertilizer-action > span,
+.land-card--compact .farming-action > span {
+  display: none;
+}
+.land-card--compact .badge-water,
+.land-card--compact .badge-bug,
+.land-card--compact .badge-harvest,
+.land-card--compact .selection-cue__label {
+  display: none;
+}
 .land-card:hover {
   box-shadow: var(--ui-shadow-md);
 }
@@ -1042,6 +1103,15 @@ function markMutantIconFailed(effect: { id?: number }) {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
+}
+.fertilizer-actions--ripen {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.fertilizer-action--ripen {
+  grid-column: 1 / -1;
+  color: #316b8a;
+  border-color: #afd0e0;
+  background: #eaf5fb;
 }
 
 .farming-action {

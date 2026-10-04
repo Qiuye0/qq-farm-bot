@@ -3,6 +3,7 @@ import { useIntervalFn } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import api, { getApiErrorMessage } from '@/api'
+import AccountSummary from '@/components/AccountSummary.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
@@ -22,7 +23,6 @@ const {
   realtimeConnected,
 } = storeToRefs(statusStore)
 const { currentAccountId, currentAccount } = storeToRefs(accountStore)
-const { dashboardItems } = storeToRefs(bagStore)
 const logContainer = ref<HTMLElement | null>(null)
 const autoScroll = ref(true)
 const lastBagFetchAt = ref(0)
@@ -94,90 +94,6 @@ const logs = [
   { label: '普通', value: 'info' },
   { label: '警告', value: 'warn' },
 ]
-
-const displayName = computed(() => {
-  const account = accountStore.currentAccount
-
-  // Try to use nickname from status (game server)
-  const gameName = status.value?.status?.name
-  if (gameName) {
-    // 如果有备注，显示为“昵称（备注）”
-    if (account?.name) {
-      return `${gameName} (${account.name})`
-    }
-    return gameName
-  }
-
-  // Check login status
-  if (!status.value?.connection?.connected) {
-    if (account) {
-      // 如果有备注和昵称，显示为“昵称（备注）”
-      if (account.name && account.nick) {
-        return `${account.nick} (${account.name})`
-      }
-      return account.name || account.nick || '未登录'
-    }
-    return '未登录'
-  }
-
-  // Fallback to account name (usually ID) or '未命名'
-  if (account) {
-    // 如果有备注和昵称，显示为“昵称（备注）”
-    if (account.name && account.nick) {
-      return `${account.nick} (${account.name})`
-    }
-    return account.name || account.nick || '未命名'
-  }
-  return '未命名'
-})
-
-// Exp Rate & Time to Level
-const expRate = computed(() => {
-  const gain = status.value?.sessionExpGained || 0
-  const uptime = status.value?.uptime || 0
-  if (!uptime)
-    return '0/时'
-  const hours = uptime / 3600
-  const rate = hours > 0 ? (gain / hours) : 0
-  return `${Math.floor(rate)}/时`
-})
-
-const timeToLevel = computed(() => {
-  const gain = status.value?.sessionExpGained || 0
-  const uptime = status.value?.uptime || 0
-  const current = status.value?.levelProgress?.current || 0
-  const needed = status.value?.levelProgress?.needed || 0
-
-  if (!needed || !uptime || gain <= 0)
-    return ''
-
-  const hours = uptime / 3600
-  const ratePerHour = hours > 0 ? (gain / hours) : 0
-  if (ratePerHour <= 0)
-    return ''
-
-  const expNeeded = needed - current
-  const minsToLevel = expNeeded / (ratePerHour / 60)
-
-  if (minsToLevel < 60)
-    return `约 ${Math.ceil(minsToLevel)} 分钟后升级`
-  return `约 ${(minsToLevel / 60).toFixed(1)} 小时后升级`
-})
-
-// Fertilizer & Collection
-const fertilizerNormal = computed(() => dashboardItems.value.find((i: any) => Number(i.id) === 1011))
-const fertilizerOrganic = computed(() => dashboardItems.value.find((i: any) => Number(i.id) === 1012))
-const collectionNormal = computed(() => dashboardItems.value.find((i: any) => Number(i.id) === 3001))
-const collectionRare = computed(() => dashboardItems.value.find((i: any) => Number(i.id) === 3002))
-
-function formatBucketTime(item: any) {
-  if (!item)
-    return '0.0h'
-  if (item.hoursText)
-    return item.hoursText.replace('小时', 'h')
-  const count = Number(item.count || 0)
-  return `${(count / 3600).toFixed(1)}h`
-}
 
 // Next Check Countdown
 const nextFarmCheck = ref('--:--:--')
@@ -312,17 +228,6 @@ function getOpName(key: string | number) {
 
 function getOpIcon(key: string | number) {
   return OP_META[String(key)]?.icon
-}
-
-function getExpPercent(p: any) {
-  if (!p || !p.needed)
-    return 0
-  return Math.min(100, Math.max(0, (p.current / p.needed) * 100))
-}
-
-function formatAssetAmount(value: unknown) {
-  const amount = Number(value)
-  return Number.isFinite(amount) ? Math.max(0, Math.trunc(amount)).toLocaleString('zh-CN') : '0'
 }
 
 async function refreshBag(force = false) {
@@ -487,166 +392,7 @@ useIntervalFn(updateCountdowns, 1000)
 
 <template>
   <div class="page-stack flex flex-col gap-5">
-    <!-- Status Cards -->
-    <div class="grid grid-cols-1 gap-4 lg:grid-cols-3 sm:grid-cols-2">
-      <!-- Account & Exp -->
-      <div class="flex flex-col farm-card rounded-2xl bg-white p-5 shadow-md dark:bg-gray-800">
-        <div class="mb-2 flex items-start justify-between">
-          <div class="flex items-center gap-1.5 text-sm text-gray-500">
-            <div class="i-fas-user-circle" />
-            账号
-          </div>
-          <div class="farm-badge rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
-            Lv.{{ status?.status?.level || 0 }}
-          </div>
-        </div>
-        <div class="mb-1 truncate text-xl font-bold" :title="displayName">
-          {{ displayName }}
-        </div>
-
-        <!-- Level Progress -->
-        <div class="mt-auto">
-          <div class="mb-1 flex justify-between text-xs text-gray-500">
-            <div class="flex items-center gap-1">
-              <div class="i-fas-bolt text-blue-400" />
-              <span>EXP</span>
-            </div>
-            <span>{{ status?.levelProgress?.current || 0 }} / {{ status?.levelProgress?.needed || '?' }}</span>
-          </div>
-          <div class="h-1.5 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
-            <div
-              class="h-full rounded-full bg-blue-500 transition-all duration-500"
-              :style="{ width: `${getExpPercent(status?.levelProgress)}%` }"
-            />
-          </div>
-          <div class="mt-2 flex justify-between text-xs text-gray-400">
-            <span>效率: {{ expRate }}</span>
-            <span>{{ timeToLevel }}</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Assets & Status -->
-      <div class="flex flex-col justify-between farm-card rounded-2xl bg-white p-5 shadow-md dark:bg-gray-800">
-        <div class="grid grid-cols-2 gap-px bg-gray-100 dark:bg-gray-700">
-          <div class="bg-white pb-3 pr-3 dark:bg-gray-800">
-            <div class="flex items-center gap-1.5 text-xs text-gray-500">
-              <div class="i-fas-coins text-yellow-500" />
-              金币
-            </div>
-            <div class="text-2xl text-yellow-600 font-bold tabular-nums dark:text-yellow-500">
-              {{ formatAssetAmount(status?.status?.gold) }}
-            </div>
-            <div
-              v-if="(status?.sessionGoldGained || 0) !== 0"
-              class="text-[10px]"
-              :class="(status?.sessionGoldGained || 0) > 0 ? 'text-green-500' : 'text-red-500'"
-            >
-              {{ (status?.sessionGoldGained || 0) > 0 ? '+' : '' }}{{ status?.sessionGoldGained || 0 }}
-            </div>
-          </div>
-          <div class="bg-white pb-3 pl-3 text-right dark:bg-gray-800">
-            <div class="flex items-center justify-end gap-1.5 text-xs text-gray-500">
-              <div class="i-fas-ticket-alt text-emerald-400" />
-              点券
-            </div>
-            <div class="text-2xl text-emerald-500 font-bold tabular-nums dark:text-emerald-400">
-              {{ formatAssetAmount(status?.status?.coupon) }}
-            </div>
-            <div
-              v-if="(status?.sessionCouponGained || 0) !== 0"
-              class="text-[10px]"
-              :class="(status?.sessionCouponGained || 0) > 0 ? 'text-green-500' : 'text-red-500'"
-            >
-              {{ (status?.sessionCouponGained || 0) > 0 ? '+' : '' }}{{ status?.sessionCouponGained || 0 }}
-            </div>
-          </div>
-          <div class="bg-white pr-3 pt-3 dark:bg-gray-800">
-            <div class="flex items-center gap-1.5 text-xs text-gray-500">
-              <div class="i-fas-seedling text-amber-500" />
-              金豆豆
-            </div>
-            <div class="text-2xl text-amber-500 font-bold tabular-nums dark:text-amber-400">
-              {{ formatAssetAmount(status?.status?.goldBean) }}
-            </div>
-          </div>
-          <div class="bg-white pl-3 pt-3 text-right dark:bg-gray-800">
-            <div class="flex items-center justify-end gap-1.5 text-xs text-gray-500">
-              <div class="i-fas-gem text-cyan-500" />
-              钻石
-            </div>
-            <div class="text-2xl text-cyan-600 font-bold tabular-nums dark:text-cyan-400">
-              {{ formatAssetAmount(diamondBalance) }}
-            </div>
-          </div>
-        </div>
-        <div class="mt-4 border-t border-gray-100 pt-3 dark:border-gray-700">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <div class="h-2.5 w-2.5 rounded-full" :class="status?.connection?.connected ? 'bg-green-500' : 'bg-red-500'" />
-              <span class="text-xs font-bold">{{ status?.connection?.connected ? '在线' : '离线' }}</span>
-            </div>
-            <div class="flex items-center gap-1.5 text-xs text-gray-400">
-              <span class="text-purple-400">🕐</span>
-              {{ formatDuration(localUptime) }}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Items (Fertilizer & Collection) -->
-      <div class="flex flex-col justify-between farm-card rounded-2xl bg-white p-5 shadow-md dark:bg-gray-800">
-        <div class="mb-2 flex items-center gap-1.5 text-sm text-gray-500">
-          <div class="i-fas-flask text-emerald-400" />
-          化肥容器
-        </div>
-        <div class="grid grid-cols-2 gap-2">
-          <div>
-            <div class="flex items-center gap-1 text-xs text-gray-400">
-              <div class="i-fas-flask text-emerald-400" />
-              普通
-            </div>
-            <div class="font-bold">
-              {{ formatBucketTime(fertilizerNormal) }}
-            </div>
-          </div>
-          <div>
-            <div class="flex items-center gap-1 text-xs text-gray-400">
-              <div class="i-fas-vial text-emerald-400" />
-              有机
-            </div>
-            <div class="font-bold">
-              {{ formatBucketTime(fertilizerOrganic) }}
-            </div>
-          </div>
-        </div>
-        <div class="my-2 border-t border-gray-100 dark:border-gray-700" />
-        <div class="mb-1 flex items-center gap-1.5 text-sm text-gray-500">
-          <div class="i-fas-star text-emerald-400" />
-          收藏点
-        </div>
-        <div class="grid grid-cols-2 gap-2">
-          <div>
-            <div class="flex items-center gap-1 text-xs text-gray-400">
-              <div class="i-fas-bookmark text-emerald-400" />
-              普通
-            </div>
-            <div class="font-bold">
-              {{ collectionNormal?.count || 0 }}
-            </div>
-          </div>
-          <div>
-            <div class="flex items-center gap-1 text-xs text-gray-400">
-              <div class="i-fas-gem text-emerald-400" />
-              典藏
-            </div>
-            <div class="font-bold">
-              {{ collectionRare?.count || 0 }}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+    <AccountSummary :refresh-data="false" />
 
     <!-- Main Content Flex -->
     <div class="flex flex-1 flex-col items-stretch gap-6 md:flex-row">

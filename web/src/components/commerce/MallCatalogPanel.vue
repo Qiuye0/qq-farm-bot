@@ -53,6 +53,7 @@ const filteredGoods = computed(() => {
       return goods.isDiscounted || goods.rewards.some(item => [1028, 1029, 1030, 80101, 80102, 80103, 90031, 90032, 90033, 90034, 90041, 29004, 101305, 101613, 6001, 6002, 26030, 90042].includes(Number(item.id)))
     return true
   }).map(goods => ({ ...goods, action: getMallPurchaseAction(goods, slotType === 4 ? mall.value?.membership : null) }))
+    .sort((left, right) => Number(right.action.enabled) - Number(left.action.enabled))
 })
 
 const refreshRemaining = computed(() => {
